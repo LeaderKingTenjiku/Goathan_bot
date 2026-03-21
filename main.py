@@ -4,28 +4,27 @@ import telebot
 from flask import Flask, request
 from openai import OpenAI
 
-# 1. Fetch tokens from Environment Variables
+# 1. Fetch tokens securely from Render Environment Variables
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-HF_TOKEN = os.environ.get("HF_TOKEN")
+OPENROUTER_TOKEN = os.environ.get("OPENROUTER_TOKEN")
 
-if not BOT_TOKEN or not HF_TOKEN:
-    raise ValueError("BOT_TOKEN and HF_TOKEN must be set in environment variables.")
+if not BOT_TOKEN or not OPENROUTER_TOKEN:
+    raise ValueError("BOT_TOKEN and OPENROUTER_TOKEN must be set in environment variables.")
 
 # 2. Initialize Telegram Bot and Flask App
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# Fetch bot info dynamically to get its username for group mentions
 bot_info = bot.get_me()
 BOT_USERNAME = bot_info.username
 
-# 3. Initialize OpenAI client with Hugging Face endpoint
+# 3. Initialize OpenRouter API
 client = OpenAI(
-    base_url="https://router.huggingface.co/v1",
-    api_key=HF_TOKEN,
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_TOKEN,
 )
 
-# 4. Automatically setup Webhook if running on Render
+# 4. Setup Render Webhook automatically
 app_url = os.environ.get("RENDER_EXTERNAL_URL")
 if app_url:
     bot.remove_webhook()
@@ -36,32 +35,33 @@ if app_url:
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "Hello! I am an AI chatbot. In groups, mention me or reply to my messages to talk to me!")
+    bot.reply_to(message, "Hello! I am an AI chatbot powered by Gemini 2.0 Flash. In groups, mention me or reply to my messages to talk to me!")
 
 @bot.message_handler(func=lambda message: True)
 def chat_with_ai(message):
     try:
         text = message.text
+        
+        # Ignore empty text (Photos, Stickers, GIFs, etc.)
+        if not text:
+            return 
+
         chat_type = message.chat.type
 
-        # --- SMART GROUP LOGIC ---
+        # Smart Group Logic: Only reply if mentioned or replied to
         if chat_type in['group', 'supergroup']:
-            # Check if the bot is mentioned by @username
             is_mentioned = f"@{BOT_USERNAME}" in text
             
-            # Check if the user is replying directly to a previous message from the bot
             is_reply_to_bot = False
             if message.reply_to_message and message.reply_to_message.from_user.username == BOT_USERNAME:
                 is_reply_to_bot = True
             
-            # If the bot is not mentioned and not replied to, ignore the message
             if not (is_mentioned or is_reply_to_bot):
                 return
             
-            # Remove the @username from the text so it doesn't confuse the AI prompt
+            # Remove the bot's @username from the prompt
             text = text.replace(f"@{BOT_USERNAME}", "").strip()
             
-            # If they only tagged the bot without asking a question
             if not text:
                 bot.reply_to(message, "Yes? How can I help you?")
                 return
@@ -69,9 +69,9 @@ def chat_with_ai(message):
         # Show typing status in Telegram
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # Call the OpenAI API
+        # Call the OpenRouter API with Gemini 2.0 Flash FREE
         chat_completion = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-R1:novita",
+            model="google/gemini-2.0-flash-exp:free",
             messages=[
                 {
                     "role": "user",
@@ -80,12 +80,13 @@ def chat_with_ai(message):
             ]
         )
         
-        # Extract and send response back to user
+        # Extract and send response
         reply_text = chat_completion.choices[0].message.content
         bot.reply_to(message, reply_text)
         
     except Exception as e:
-        bot.reply_to(message, f"Sorry, I encountered an error: {str(e)}")
+        print(f"CRITICAL ERROR: {str(e)}")
+        bot.reply_to(message, f"Sorry, API Error: {str(e)}")
 
 
 # --- FLASK WEBHOOK ROUTES ---
@@ -99,7 +100,7 @@ def receive_update():
 
 @app.route('/')
 def index():
-    return f"Bot @{BOT_USERNAME} is running perfectly!", 200
+    return f"Bot @{BOT_USERNAME} is running!", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

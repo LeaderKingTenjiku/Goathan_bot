@@ -1,83 +1,76 @@
 import os
 import telebot
+import requests
 from flask import Flask, request
-from openai import OpenAI
 
 # 🔐 ENV VARIABLES
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 # 🤖 TELEGRAM BOT
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-
-# ⚡ OPENROUTER CLIENT
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-    default_headers={
-        "HTTP-Referer": "https://tenjiku-ai.com",
-        "X-Title": "Tenjiku AI Bot"
-    }
-)
+bot = telebot.TeleBot(BOT_TOKEN)
 
 # 🌐 FLASK APP
 app = Flask(__name__)
 
-# 🧠 MEMORY (per user)
+# 🧠 MEMORY
 user_memory = {}
 
 # 🎭 TENJIKU AI PERSONALITY
 SYSTEM_PROMPT = """
 You are Tenjiku AI 🤖🔥
-
-Personality:
 - Cool, confident, slightly dominant
-- Friendly but powerful tone
-- Short, impactful replies
+- Short, powerful replies
+- Friendly but strong tone
 - Use emojis like 🔥⚡😈 sometimes
-
-Rules:
-- Help clearly and smartly
-- Avoid long boring paragraphs
 """
 
-# 🚀 START COMMAND
+# 🤖 HUGGING FACE API (DeepSeek Distilled)
+API_URL = "https://api-inference.huggingface.co/models/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+
+HEADERS = {
+    "Authorization": f"Bearer {HF_TOKEN}"
+}
+
+# ⚡ Generate reply
+def generate_reply(prompt):
+    try:
+        response = requests.post(
+            API_URL,
+            headers=HEADERS,
+            json={
+                "inputs": prompt,
+                "parameters": {
+                    "max_new_tokens": 200,
+                    "temperature": 0.7
+                }
+            },
+            timeout=20
+        )
+
+        data = response.json()
+
+        if isinstance(data, list):
+            return data[0]["generated_text"].replace(prompt, "").strip()
+
+        return "⚠️ AI busy… try again."
+
+    except Exception:
+        return "⚠️ Server error… try again."
+
+# 🚀 START
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "🔥 Tenjiku AI activated. Ask anything.")
+    bot.reply_to(message, "🔥 Tenjiku AI (DeepSeek) activated.")
 
-# ⚡ MULTI-MODEL FUNCTION (DeepSeek + fallback)
-def generate_reply(messages):
-    models = [
-        "deepseek/deepseek-r1:free",  # 🥇 main model
-        "meta-llama/llama-3.1-8b-instruct:free"  # 🥈 fallback
-    ]
-
-    for model in models:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                timeout=12
-            )
-
-            reply = response.choices[0].message.content
-            if reply:
-                return reply.strip()
-
-        except Exception:
-            continue
-
-    return "⚠️ Tenjiku AI is busy right now. Try again in a moment."
-
-# 💬 MAIN CHAT HANDLER
+# 💬 CHAT HANDLER
 @bot.message_handler(func=lambda message: True)
 def chat(message):
     try:
         if not message.text:
             return
 
-        # 🛑 GROUP CONTROL (avoid spam)
+        # 🛑 GROUP CONTROL
         if message.chat.type in ["group", "supergroup"]:
             bot_username = bot.get_me().username
 
@@ -97,22 +90,20 @@ def chat(message):
         if user_id not in user_memory:
             user_memory[user_id] = []
 
-        # ➕ ADD USER MESSAGE
-        user_memory[user_id].append({"role": "user", "content": user_text})
+        user_memory[user_id].append(user_text)
+        user_memory[user_id] = user_memory[user_id][-5:]
 
-        # 🔒 LIMIT MEMORY (last 8 messages → faster)
-        user_memory[user_id] = user_memory[user_id][-8:]
+        # 🧠 BUILD PROMPT
+        conversation = "\n".join(user_memory[user_id])
+        prompt = f"{SYSTEM_PROMPT}\n\nConversation:\n{conversation}\nAI:"
 
-        # ⚡ GENERATE REPLY
-        reply = generate_reply([
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *user_memory[user_id]
-        ])
+        # ⚡ GET REPLY
+        reply = generate_reply(prompt)
 
-        # 🧠 SAVE BOT REPLY
-        user_memory[user_id].append({"role": "assistant", "content": reply})
+        # SAVE MEMORY
+        user_memory[user_id].append(reply)
 
-        # 📤 SEND REPLY
+        # SEND
         bot.reply_to(message, reply)
 
     except Exception:
@@ -121,15 +112,14 @@ def chat(message):
 # 🌐 WEBHOOK
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
+    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
     bot.process_new_updates([update])
     return "OK", 200
 
-# 🌍 HOME ROUTE
+# 🌍 HOME
 @app.route("/")
 def home():
-    return "Tenjiku AI is running 🔥"
+    return "Tenjiku AI running (HF DeepSeek) 🔥"
 
 # 🔗 SET WEBHOOK
 def set_webhook():
@@ -138,7 +128,7 @@ def set_webhook():
         bot.remove_webhook()
         bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
 
-# ▶️ RUN APP
+# ▶️ RUN
 if __name__ == "__main__":
     set_webhook()
     app.run(host="0.0.0.0", port=10000)

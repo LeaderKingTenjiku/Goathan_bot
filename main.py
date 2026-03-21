@@ -15,6 +15,10 @@ if not BOT_TOKEN or not HF_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
+# Fetch bot info dynamically to get its username for group mentions
+bot_info = bot.get_me()
+BOT_USERNAME = bot_info.username
+
 # 3. Initialize OpenAI client with Hugging Face endpoint
 client = OpenAI(
     base_url="https://router.huggingface.co/v1",
@@ -25,7 +29,6 @@ client = OpenAI(
 app_url = os.environ.get("RENDER_EXTERNAL_URL")
 if app_url:
     bot.remove_webhook()
-    # Ensure URL is formatted correctly
     webhook_url = f"{app_url.rstrip('/')}/{BOT_TOKEN}"
     bot.set_webhook(url=webhook_url)
 
@@ -33,21 +36,46 @@ if app_url:
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "Hello! I am an AI chatbot powered by DeepSeek. Ask me anything!")
+    bot.reply_to(message, "Hello! I am an AI chatbot. In groups, mention me or reply to my messages to talk to me!")
 
 @bot.message_handler(func=lambda message: True)
 def chat_with_ai(message):
     try:
+        text = message.text
+        chat_type = message.chat.type
+
+        # --- SMART GROUP LOGIC ---
+        if chat_type in['group', 'supergroup']:
+            # Check if the bot is mentioned by @username
+            is_mentioned = f"@{BOT_USERNAME}" in text
+            
+            # Check if the user is replying directly to a previous message from the bot
+            is_reply_to_bot = False
+            if message.reply_to_message and message.reply_to_message.from_user.username == BOT_USERNAME:
+                is_reply_to_bot = True
+            
+            # If the bot is not mentioned and not replied to, ignore the message
+            if not (is_mentioned or is_reply_to_bot):
+                return
+            
+            # Remove the @username from the text so it doesn't confuse the AI prompt
+            text = text.replace(f"@{BOT_USERNAME}", "").strip()
+            
+            # If they only tagged the bot without asking a question
+            if not text:
+                bot.reply_to(message, "Yes? How can I help you?")
+                return
+
         # Show typing status in Telegram
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # Translate user's JS code logic to Python OpenAI SDK
+        # Call the OpenAI API
         chat_completion = client.chat.completions.create(
             model="deepseek-ai/DeepSeek-R1:novita",
             messages=[
                 {
                     "role": "user",
-                    "content": message.text,
+                    "content": text,
                 }
             ]
         )
@@ -59,23 +87,20 @@ def chat_with_ai(message):
     except Exception as e:
         bot.reply_to(message, f"Sorry, I encountered an error: {str(e)}")
 
+
 # --- FLASK WEBHOOK ROUTES ---
 
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def receive_update():
     json_string = request.get_data().decode('utf-8')
     update = telebot.types.Update.de_json(json_string)
-    
-    # Process the update in a separate thread.
-    # This prevents Telegram from timing out if the AI model takes a long time to reply.
     threading.Thread(target=bot.process_new_updates, args=([update],)).start()
     return "!", 200
 
 @app.route('/')
 def index():
-    return "Bot is running perfectly!", 200
+    return f"Bot @{BOT_USERNAME} is running perfectly!", 200
 
 if __name__ == "__main__":
-    # Fallback to run locally without gunicorn
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

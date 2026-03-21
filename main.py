@@ -10,7 +10,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # 🤖 TELEGRAM BOT
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 
-# ⚡ OPENROUTER CLIENT (optimized)
+# ⚡ OPENROUTER CLIENT
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
@@ -38,20 +38,19 @@ Personality:
 
 Rules:
 - Help clearly and smartly
-- No boring long paragraphs
+- Avoid long boring paragraphs
 """
 
 # 🚀 START COMMAND
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "🔥 Tenjiku AI activated. Speak.")
+    bot.reply_to(message, "🔥 Tenjiku AI activated. Ask anything.")
 
-# ⚡ FAST MULTI-MODEL GENERATOR
+# ⚡ MULTI-MODEL FUNCTION (DeepSeek + fallback)
 def generate_reply(messages):
     models = [
-        "meta-llama/llama-3.1-8b-instruct:free",
-        "mistralai/mistral-7b-instruct:free",
-        "google/gemini-2.0-flash-exp:free"
+        "deepseek/deepseek-r1:free",  # 🥇 main model
+        "meta-llama/llama-3.1-8b-instruct:free"  # 🥈 fallback
     ]
 
     for model in models:
@@ -59,7 +58,7 @@ def generate_reply(messages):
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                timeout=15
+                timeout=12
             )
 
             reply = response.choices[0].message.content
@@ -67,9 +66,9 @@ def generate_reply(messages):
                 return reply.strip()
 
         except Exception:
-            continue  # try next model
+            continue
 
-    return "⚠️ All AI models are busy right now. Try again later."
+    return "⚠️ Tenjiku AI is busy right now. Try again in a moment."
 
 # 💬 MAIN CHAT HANDLER
 @bot.message_handler(func=lambda message: True)
@@ -78,7 +77,7 @@ def chat(message):
         if not message.text:
             return
 
-        # 🛑 GROUP CONTROL
+        # 🛑 GROUP CONTROL (avoid spam)
         if message.chat.type in ["group", "supergroup"]:
             bot_username = bot.get_me().username
 
@@ -101,7 +100,7 @@ def chat(message):
         # ➕ ADD USER MESSAGE
         user_memory[user_id].append({"role": "user", "content": user_text})
 
-        # 🔒 LIMIT MEMORY (last 8 messages for speed)
+        # 🔒 LIMIT MEMORY (last 8 messages → faster)
         user_memory[user_id] = user_memory[user_id][-8:]
 
         # ⚡ GENERATE REPLY
@@ -127,7 +126,7 @@ def webhook():
     bot.process_new_updates([update])
     return "OK", 200
 
-# 🌍 HOME
+# 🌍 HOME ROUTE
 @app.route("/")
 def home():
     return "Tenjiku AI is running 🔥"
@@ -139,7 +138,7 @@ def set_webhook():
         bot.remove_webhook()
         bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
 
-# ▶️ RUN
+# ▶️ RUN APP
 if __name__ == "__main__":
     set_webhook()
     app.run(host="0.0.0.0", port=10000)

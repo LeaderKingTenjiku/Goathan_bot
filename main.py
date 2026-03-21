@@ -1,76 +1,69 @@
 import os
 import telebot
-import requests
 from flask import Flask, request
+from groq import Groq
 
 # 🔐 ENV VARIABLES
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-HF_TOKEN = os.getenv("HF_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # 🤖 TELEGRAM BOT
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+
+# ⚡ GROQ CLIENT
+client = Groq(api_key=GROQ_API_KEY)
 
 # 🌐 FLASK APP
 app = Flask(__name__)
 
-# 🧠 MEMORY
+# 🧠 MEMORY (per user)
 user_memory = {}
 
-# 🎭 TENJIKU AI PERSONALITY
+# 🎭 GOATHAN PERSONALITY
 SYSTEM_PROMPT = """
-You are Tenjiku AI 🤖🔥
-- Cool, confident, slightly dominant
-- Short, powerful replies
-- Friendly but strong tone
+You are Goathan 🤖🔥
+
+Personality:
+- Cool, confident, dominant presence
+- Speak like a powerful AI leader
+- Short, sharp, impactful replies
+- Friendly but slightly savage tone 😈
 - Use emojis like 🔥⚡😈 sometimes
+
+Rules:
+- Help clearly and smartly
+- Avoid boring long paragraphs
+- Always sound powerful and confident
 """
 
-# 🤖 HUGGING FACE API (DeepSeek Distilled)
-API_URL = "https://api-inference.huggingface.co/models/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
-
-HEADERS = {
-    "Authorization": f"Bearer {HF_TOKEN}"
-}
-
-# ⚡ Generate reply
-def generate_reply(prompt):
-    try:
-        response = requests.post(
-            API_URL,
-            headers=HEADERS,
-            json={
-                "inputs": prompt,
-                "parameters": {
-                    "max_new_tokens": 200,
-                    "temperature": 0.7
-                }
-            },
-            timeout=20
-        )
-
-        data = response.json()
-
-        if isinstance(data, list):
-            return data[0]["generated_text"].replace(prompt, "").strip()
-
-        return "⚠️ AI busy… try again."
-
-    except Exception:
-        return "⚠️ Server error… try again."
-
-# 🚀 START
+# 🚀 START COMMAND
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "🔥 Tenjiku AI (DeepSeek) activated.")
+    bot.reply_to(message, "🔥 Goathan activated. Speak.")
 
-# 💬 CHAT HANDLER
+# ⚡ GENERATE REPLY
+def generate_reply(messages):
+    try:
+        response = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=300
+        )
+
+        return response.choices[0].message.content.strip()
+
+    except Exception:
+        return "⚠️ Goathan is busy… try again."
+
+# 💬 MAIN CHAT HANDLER
 @bot.message_handler(func=lambda message: True)
 def chat(message):
     try:
         if not message.text:
             return
 
-        # 🛑 GROUP CONTROL
+        # 🛑 GROUP CONTROL (no spam)
         if message.chat.type in ["group", "supergroup"]:
             bot_username = bot.get_me().username
 
@@ -90,36 +83,38 @@ def chat(message):
         if user_id not in user_memory:
             user_memory[user_id] = []
 
-        user_memory[user_id].append(user_text)
-        user_memory[user_id] = user_memory[user_id][-5:]
+        # ➕ ADD USER MESSAGE
+        user_memory[user_id].append({"role": "user", "content": user_text})
 
-        # 🧠 BUILD PROMPT
-        conversation = "\n".join(user_memory[user_id])
-        prompt = f"{SYSTEM_PROMPT}\n\nConversation:\n{conversation}\nAI:"
+        # 🔒 LIMIT MEMORY (last 8 messages)
+        user_memory[user_id] = user_memory[user_id][-8:]
 
-        # ⚡ GET REPLY
-        reply = generate_reply(prompt)
+        # ⚡ GENERATE REPLY
+        reply = generate_reply([
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *user_memory[user_id]
+        ])
 
-        # SAVE MEMORY
-        user_memory[user_id].append(reply)
+        # 🧠 SAVE BOT REPLY
+        user_memory[user_id].append({"role": "assistant", "content": reply})
 
-        # SEND
+        # 📤 SEND REPLY
         bot.reply_to(message, reply)
 
     except Exception:
-        bot.reply_to(message, "⚠️ Tenjiku AI glitch… try again.")
+        bot.reply_to(message, "⚠️ Goathan glitch… try again.")
 
-# 🌐 WEBHOOK
+# 🌐 WEBHOOK ROUTE
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
     bot.process_new_updates([update])
     return "OK", 200
 
-# 🌍 HOME
+# 🌍 HOME ROUTE
 @app.route("/")
 def home():
-    return "Tenjiku AI running (HF DeepSeek) 🔥"
+    return "Goathan AI running on Groq ⚡"
 
 # 🔗 SET WEBHOOK
 def set_webhook():
@@ -128,7 +123,7 @@ def set_webhook():
         bot.remove_webhook()
         bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
 
-# ▶️ RUN
+# ▶️ RUN APP
 if __name__ == "__main__":
     set_webhook()
     app.run(host="0.0.0.0", port=10000)

@@ -8,9 +8,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # 🤖 TELEGRAM BOT
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 
-# 🧠 OPENROUTER CLIENT (Gemini optimized)
+# ⚡ OPENROUTER CLIENT (optimized)
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
@@ -20,7 +20,7 @@ client = OpenAI(
     }
 )
 
-# 🌐 FLASK APP (Render)
+# 🌐 FLASK APP
 app = Flask(__name__)
 
 # 🧠 MEMORY (per user)
@@ -33,19 +33,43 @@ You are Tenjiku AI 🤖🔥
 Personality:
 - Cool, confident, slightly dominant
 - Friendly but powerful tone
-- Speak like a leader of a big network
-- Keep replies short, impactful, not boring
-- Use emojis like 🔥⚡😈 occasionally
+- Short, impactful replies
+- Use emojis like 🔥⚡😈 sometimes
 
 Rules:
 - Help clearly and smartly
-- Never act weak or confused
+- No boring long paragraphs
 """
 
 # 🚀 START COMMAND
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "🔥 Welcome to Tenjiku AI. Speak.")
+    bot.reply_to(message, "🔥 Tenjiku AI activated. Speak.")
+
+# ⚡ FAST MULTI-MODEL GENERATOR
+def generate_reply(messages):
+    models = [
+        "meta-llama/llama-3.1-8b-instruct:free",
+        "mistralai/mistral-7b-instruct:free",
+        "google/gemini-2.0-flash-exp:free"
+    ]
+
+    for model in models:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                timeout=15
+            )
+
+            reply = response.choices[0].message.content
+            if reply:
+                return reply.strip()
+
+        except Exception:
+            continue  # try next model
+
+    return "⚠️ All AI models are busy right now. Try again later."
 
 # 💬 MAIN CHAT HANDLER
 @bot.message_handler(func=lambda message: True)
@@ -54,7 +78,7 @@ def chat(message):
         if not message.text:
             return
 
-        # 🛑 GROUP CONTROL (no spam)
+        # 🛑 GROUP CONTROL
         if message.chat.type in ["group", "supergroup"]:
             bot_username = bot.get_me().username
 
@@ -77,34 +101,14 @@ def chat(message):
         # ➕ ADD USER MESSAGE
         user_memory[user_id].append({"role": "user", "content": user_text})
 
-        # 🔒 LIMIT MEMORY (last 10 messages)
-        user_memory[user_id] = user_memory[user_id][-10:]
+        # 🔒 LIMIT MEMORY (last 8 messages for speed)
+        user_memory[user_id] = user_memory[user_id][-8:]
 
-        # 🤖 PRIMARY MODEL (Gemini Flash)
-        try:
-            response = client.chat.completions.create(
-                model="google/gemini-2.0-flash-exp:free",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    *user_memory[user_id]
-                ],
-            )
-        except:
-            # 🔁 FALLBACK MODEL (if Gemini fails)
-            response = client.chat.completions.create(
-                model="meta-llama/llama-3.1-8b-instruct:free",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    *user_memory[user_id]
-                ],
-            )
-
-        # 📩 GET REPLY
-        reply = response.choices[0].message.content
-
-        # ⚠️ HANDLE EMPTY RESPONSE
-        if not reply:
-            reply = "⚡ Tenjiku AI is thinking… try again."
+        # ⚡ GENERATE REPLY
+        reply = generate_reply([
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *user_memory[user_id]
+        ])
 
         # 🧠 SAVE BOT REPLY
         user_memory[user_id].append({"role": "assistant", "content": reply})
@@ -112,33 +116,30 @@ def chat(message):
         # 📤 SEND REPLY
         bot.reply_to(message, reply)
 
-    except Exception as e:
-        if "402" in str(e):
-            bot.reply_to(message, "⚠️ Tenjiku AI energy low… recharge API.")
-        else:
-            bot.reply_to(message, "⚠️ Error occurred. Try again.")
+    except Exception:
+        bot.reply_to(message, "⚠️ Tenjiku AI glitch… try again.")
 
-# 🌐 WEBHOOK ROUTE
+# 🌐 WEBHOOK
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode("UTF-8")
+    json_str = request.get_data().decode("utf-8")
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "OK", 200
 
-# 🌍 HOME ROUTE
+# 🌍 HOME
 @app.route("/")
-def index():
+def home():
     return "Tenjiku AI is running 🔥"
 
 # 🔗 SET WEBHOOK
 def set_webhook():
-    render_url = os.getenv("RENDER_EXTERNAL_URL")
-    if render_url:
+    url = os.getenv("RENDER_EXTERNAL_URL")
+    if url:
         bot.remove_webhook()
-        bot.set_webhook(url=f"{render_url}/{BOT_TOKEN}")
+        bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
 
-# ▶️ RUN APP
+# ▶️ RUN
 if __name__ == "__main__":
     set_webhook()
     app.run(host="0.0.0.0", port=10000)

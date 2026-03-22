@@ -19,16 +19,17 @@ if not BOT_TOKEN or not OPENROUTER_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
+# Dynamically get the bot's username so it knows when it's being mentioned
 bot_info = bot.get_me()
 BOT_USERNAME = bot_info.username
 
-# This connects to OpenRouter using your OPENROUTER_TOKEN
+# Connect to OpenRouter
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_TOKEN,
 )
 
-# Automatically set up the Webhook so Render keeps the bot alive instantly
+# Automatically set up the Webhook for Render
 app_url = os.environ.get("RENDER_EXTERNAL_URL")
 if app_url:
     bot.remove_webhook()
@@ -41,11 +42,16 @@ if app_url:
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "Hello! I am an AI chatbot. I am currently running DeepSeek-R1. In groups, mention me or reply to my messages to talk to me!")
+    welcome_text = (
+        "Hello! I am an AI chatbot powered by DeepSeek-R1.\n\n"
+        "In private messages, you can just talk to me normally.\n"
+        f"In groups, please mention me (`@{BOT_USERNAME}`) or reply to my messages so I know you are talking to me!"
+    )
+    bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['ping'])
 def ping_bot(message):
-    bot.reply_to(message, f"Pong! I am online and connected to OpenRouter.\nMy username is @{BOT_USERNAME}")
+    bot.reply_to(message, f"Pong! I am online, awake, and connected to OpenRouter.\nMy username is @{BOT_USERNAME}")
 
 @bot.message_handler(func=lambda message: True)
 def chat_with_ai(message):
@@ -58,8 +64,9 @@ def chat_with_ai(message):
 
         chat_type = message.chat.type
 
-        # SMART GROUP LOGIC: Only reply if mentioned or directly replied to
-        if chat_type in ['group', 'supergroup']:
+        # --- SMART GROUP LOGIC ---
+        # If in a group, only reply if the bot is mentioned or replied to
+        if chat_type in['group', 'supergroup']:
             is_mentioned = f"@{BOT_USERNAME}" in text
             
             is_reply_to_bot = False
@@ -69,9 +76,10 @@ def chat_with_ai(message):
             if not (is_mentioned or is_reply_to_bot):
                 return
             
-            # Remove the @username so it doesn't confuse the AI
+            # Remove the bot's @username from the text so the AI doesn't get confused
             text = text.replace(f"@{BOT_USERNAME}", "").strip()
             
+            # If they just tagged the bot but didn't say anything
             if not text:
                 bot.reply_to(message, "Yes? How can I help you?")
                 return
@@ -79,7 +87,7 @@ def chat_with_ai(message):
         # Show the "typing..." status in Telegram
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # Call the OpenRouter Free API (Using DeepSeek-R1 Free)
+        # --- OPENROUTER API CALL (100% FREE MODEL) ---
         chat_completion = client.chat.completions.create(
             model="deepseek/deepseek-r1:free", 
             messages=[
@@ -90,7 +98,7 @@ def chat_with_ai(message):
             ]
         )
         
-        # Send the AI's response back to Telegram
+        # Extract the AI's response and send it back
         reply_text = chat_completion.choices[0].message.content
         bot.reply_to(message, reply_text)
         
@@ -106,13 +114,15 @@ def chat_with_ai(message):
 def receive_update():
     json_string = request.get_data().decode('utf-8')
     update = telebot.types.Update.de_json(json_string)
-    # Process messages in a background thread so Telegram doesn't timeout
+    
+    # Process messages in a background thread.
+    # DeepSeek-R1 takes time to "think". If we don't use a thread, Telegram times out.
     threading.Thread(target=bot.process_new_updates, args=([update],)).start()
     return "!", 200
 
 @app.route('/')
 def index():
-    return f"Bot @{BOT_USERNAME} is running securely!", 200
+    return f"Bot @{BOT_USERNAME} is currently running securely and awake!", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

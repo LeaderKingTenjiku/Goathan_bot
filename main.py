@@ -4,78 +4,116 @@ import telebot
 from flask import Flask, request
 from openai import OpenAI
 
-# 1. Fetch tokens from Environment Variables
+# ==========================================
+# 1. LOAD ENVIRONMENT VARIABLES SECURELY
+# ==========================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-HF_TOKEN = os.environ.get("HF_TOKEN")
+OPENROUTER_TOKEN = os.environ.get("OPENROUTER_TOKEN")
 
-if not BOT_TOKEN or not HF_TOKEN:
-    raise ValueError("BOT_TOKEN and HF_TOKEN must be set in environment variables.")
+if not BOT_TOKEN or not OPENROUTER_TOKEN:
+    raise ValueError("CRITICAL ERROR: BOT_TOKEN and OPENROUTER_TOKEN must be set in Render Environment Variables.")
 
-# 2. Initialize Telegram Bot and Flask App
+# ==========================================
+# 2. INITIALIZE BOT, FLASK, & OPENROUTER
+# ==========================================
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# 3. Initialize OpenAI client with Hugging Face endpoint
+bot_info = bot.get_me()
+BOT_USERNAME = bot_info.username
+
+# This connects to OpenRouter using your OPENROUTER_TOKEN
 client = OpenAI(
-    base_url="https://router.huggingface.co/v1",
-    api_key=HF_TOKEN,
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_TOKEN,
 )
 
-# 4. Automatically setup Webhook if running on Render
+# Automatically set up the Webhook so Render keeps the bot alive instantly
 app_url = os.environ.get("RENDER_EXTERNAL_URL")
 if app_url:
     bot.remove_webhook()
-    # Ensure URL is formatted correctly
     webhook_url = f"{app_url.rstrip('/')}/{BOT_TOKEN}"
     bot.set_webhook(url=webhook_url)
 
-# --- TELEGRAM BOT LOGIC ---
+# ==========================================
+# 3. TELEGRAM BOT LOGIC
+# ==========================================
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "Hello! I am an AI chatbot powered by DeepSeek. Ask me anything!")
+    bot.reply_to(message, "Hello! I am an AI chatbot. I am currently running DeepSeek-R1. In groups, mention me or reply to my messages to talk to me!")
+
+@bot.message_handler(commands=['ping'])
+def ping_bot(message):
+    bot.reply_to(message, f"Pong! I am online and connected to OpenRouter.\nMy username is @{BOT_USERNAME}")
 
 @bot.message_handler(func=lambda message: True)
 def chat_with_ai(message):
     try:
-        # Show typing status in Telegram
+        text = message.text
+        
+        # Ignore non-text messages (photos, stickers, etc.)
+        if not text:
+            return 
+
+        chat_type = message.chat.type
+
+        # SMART GROUP LOGIC: Only reply if mentioned or directly replied to
+        if chat_type in ['group', 'supergroup']:
+            is_mentioned = f"@{BOT_USERNAME}" in text
+            
+            is_reply_to_bot = False
+            if message.reply_to_message and message.reply_to_message.from_user.username == BOT_USERNAME:
+                is_reply_to_bot = True
+            
+            if not (is_mentioned or is_reply_to_bot):
+                return
+            
+            # Remove the @username so it doesn't confuse the AI
+            text = text.replace(f"@{BOT_USERNAME}", "").strip()
+            
+            if not text:
+                bot.reply_to(message, "Yes? How can I help you?")
+                return
+
+        # Show the "typing..." status in Telegram
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # Translate user's JS code logic to Python OpenAI SDK
+        # Call the OpenRouter Free API (Using DeepSeek-R1 Free)
         chat_completion = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-R1:novita",
+            model="deepseek/deepseek-r1:free", 
             messages=[
                 {
                     "role": "user",
-                    "content": message.text,
+                    "content": text,
                 }
             ]
         )
         
-        # Extract and send response back to user
+        # Send the AI's response back to Telegram
         reply_text = chat_completion.choices[0].message.content
         bot.reply_to(message, reply_text)
         
     except Exception as e:
-        bot.reply_to(message, f"Sorry, I encountered an error: {str(e)}")
+        print(f"API ERROR: {str(e)}")
+        bot.reply_to(message, f"Sorry, the API encountered an error: {str(e)}")
 
-# --- FLASK WEBHOOK ROUTES ---
+# ==========================================
+# 4. FLASK WEBHOOK ROUTES FOR RENDER
+# ==========================================
 
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def receive_update():
     json_string = request.get_data().decode('utf-8')
     update = telebot.types.Update.de_json(json_string)
-    
-    # Process the update in a separate thread.
-    # This prevents Telegram from timing out if the AI model takes a long time to reply.
+    # Process messages in a background thread so Telegram doesn't timeout
     threading.Thread(target=bot.process_new_updates, args=([update],)).start()
     return "!", 200
 
 @app.route('/')
 def index():
-    return "Bot is running perfectly!", 200
+    return f"Bot @{BOT_USERNAME} is running securely!", 200
 
 if __name__ == "__main__":
-    # Fallback to run locally without gunicorn
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

@@ -89,7 +89,7 @@ def chat_with_ai(message):
         
         # --- OPENROUTER API CALL (100% FREE MODEL) ---
         chat_completion = client.chat.completions.create(
-            model="deepseek/deepseek-r1:free", 
+            model="openrouter/free", 
             messages=[
                 {
                     "role": "user",

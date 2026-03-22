@@ -1,129 +1,81 @@
 import os
+import threading
 import telebot
 from flask import Flask, request
-from groq import Groq
+from openai import OpenAI
 
-# 🔐 ENV VARIABLES
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# 1. Fetch tokens from Environment Variables
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+HF_TOKEN = os.environ.get("HF_TOKEN")
 
-# 🤖 TELEGRAM BOT
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+if not BOT_TOKEN or not HF_TOKEN:
+    raise ValueError("BOT_TOKEN and HF_TOKEN must be set in environment variables.")
 
-# ⚡ GROQ CLIENT
-client = Groq(api_key=GROQ_API_KEY)
-
-# 🌐 FLASK APP
+# 2. Initialize Telegram Bot and Flask App
+bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# 🧠 MEMORY (per user)
-user_memory = {}
+# 3. Initialize OpenAI client with Hugging Face endpoint
+client = OpenAI(
+    base_url="https://router.huggingface.co/v1",
+    api_key=HF_TOKEN,
+)
 
-# 🎭 GOATHAN PERSONALITY
-SYSTEM_PROMPT = """
-You are Goathan 🤖🔥
+# 4. Automatically setup Webhook if running on Render
+app_url = os.environ.get("RENDER_EXTERNAL_URL")
+if app_url:
+    bot.remove_webhook()
+    # Ensure URL is formatted correctly
+    webhook_url = f"{app_url.rstrip('/')}/{BOT_TOKEN}"
+    bot.set_webhook(url=webhook_url)
 
-Personality:
-- Cool, confident, dominant presence
-- Speak like a powerful AI leader
-- Short, sharp, impactful replies
-- Friendly but slightly savage tone 😈
-- Use emojis like 🔥⚡😈 sometimes
+# --- TELEGRAM BOT LOGIC ---
 
-Rules:
-- Help clearly and smartly
-- Avoid boring long paragraphs
-- Always sound powerful and confident
-"""
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    bot.reply_to(message, "Hello! I am an AI chatbot powered by DeepSeek. Ask me anything!")
 
-# 🚀 START COMMAND
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "🔥 Goathan activated. Speak.")
-
-# ⚡ GENERATE REPLY
-def generate_reply(messages):
-    try:
-        response = client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=300
-        )
-
-        return response.choices[0].message.content.strip()
-
-    except Exception:
-        return "⚠️ Goathan is busy… try again."
-
-# 💬 MAIN CHAT HANDLER
 @bot.message_handler(func=lambda message: True)
-def chat(message):
+def chat_with_ai(message):
     try:
-        if not message.text:
-            return
+        # Show typing status in Telegram
+        bot.send_chat_action(message.chat.id, 'typing')
+        
+        # Translate user's JS code logic to Python OpenAI SDK
+        chat_completion = client.chat.completions.create(
+            model="deepseek-ai/DeepSeek-R1:novita",
+            messages=[
+                {
+                    "role": "user",
+                    "content": message.text,
+                }
+            ]
+        )
+        
+        # Extract and send response back to user
+        reply_text = chat_completion.choices[0].message.content
+        bot.reply_to(message, reply_text)
+        
+    except Exception as e:
+        bot.reply_to(message, f"Sorry, I encountered an error: {str(e)}")
 
-        # 🛑 GROUP CONTROL (no spam)
-        if message.chat.type in ["group", "supergroup"]:
-            bot_username = bot.get_me().username
+# --- FLASK WEBHOOK ROUTES ---
 
-            is_mentioned = f"@{bot_username}" in message.text
-            is_reply = (
-                message.reply_to_message and
-                message.reply_to_message.from_user.id == bot.get_me().id
-            )
+@app.route('/' + BOT_TOKEN, methods=['POST'])
+def receive_update():
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    
+    # Process the update in a separate thread.
+    # This prevents Telegram from timing out if the AI model takes a long time to reply.
+    threading.Thread(target=bot.process_new_updates, args=([update],)).start()
+    return "!", 200
 
-            if not (is_mentioned or is_reply):
-                return
+@app.route('/')
+def index():
+    return "Bot is running perfectly!", 200
 
-        user_id = str(message.from_user.id)
-        user_text = message.text
-
-        # 🧠 INIT MEMORY
-        if user_id not in user_memory:
-            user_memory[user_id] = []
-
-        # ➕ ADD USER MESSAGE
-        user_memory[user_id].append({"role": "user", "content": user_text})
-
-        # 🔒 LIMIT MEMORY (last 8 messages)
-        user_memory[user_id] = user_memory[user_id][-8:]
-
-        # ⚡ GENERATE REPLY
-        reply = generate_reply([
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *user_memory[user_id]
-        ])
-
-        # 🧠 SAVE BOT REPLY
-        user_memory[user_id].append({"role": "assistant", "content": reply})
-
-        # 📤 SEND REPLY
-        bot.reply_to(message, reply)
-
-    except Exception:
-        bot.reply_to(message, "⚠️ Goathan glitch… try again.")
-
-# 🌐 WEBHOOK ROUTE
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
-    bot.process_new_updates([update])
-    return "OK", 200
-
-# 🌍 HOME ROUTE
-@app.route("/")
-def home():
-    return "Goathan AI running on Groq ⚡"
-
-# 🔗 SET WEBHOOK
-def set_webhook():
-    url = os.getenv("RENDER_EXTERNAL_URL")
-    if url:
-        bot.remove_webhook()
-        bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
-
-# ▶️ RUN APP
 if __name__ == "__main__":
-    set_webhook()
-    app.run(host="0.0.0.0", port=10000)
+    # Fallback to run locally without gunicorn
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
